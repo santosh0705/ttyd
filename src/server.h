@@ -26,6 +26,12 @@ enum pty_state {
     STATE_INIT, STATE_READY, STATE_DONE
 };
 
+struct service_t {
+    char *path;
+    char **argv;
+    LIST_ENTRY(service_t) list;
+};
+
 struct tty_client {
     bool running;
     bool initialized;
@@ -33,6 +39,8 @@ struct tty_client {
     bool authenticated;
     char hostname[100];
     char address[50];
+    char **argv;
+    char **fragment;
 
     struct lws *wsi;
     struct winsize size;
@@ -61,12 +69,11 @@ struct pss_http {
 struct tty_server {
     LIST_HEAD(client, tty_client) clients;    // client list
     int client_count;                         // client count
+    LIST_HEAD(service, service_t) services;   // service list
     char *prefs_json;                         // client preferences
     char *credential;                         // encoded basic auth credential
     int reconnect;                            // reconnect timeout
     char *index;                              // custom index.html
-    char *command;                            // full command line
-    char **argv;                              // command with arguments
     int sig_code;                             // close signal
     char sig_name[20];                        // human readable signal string
     bool readonly;                            // whether not allow clients to write to the TTY

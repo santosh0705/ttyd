@@ -1,5 +1,6 @@
 #include <string.h>
 #include <libwebsockets.h>
+#include <json.h>
 
 #include "server.h"
 #include "html.h"
@@ -51,6 +52,52 @@ check_auth(struct lws *wsi) {
 }
 
 int
+get_last_index(const char *buf, const char chr) {
+    int i = strlen(buf) - 1;
+    if (i < 0)
+        i = 0;
+    while (buf[i] != chr) {
+        i--;
+        if (i < 0)
+            break;
+    }
+    return i;
+}
+
+int
+auth_token_url_match(const char *ser_path, const char *path_to_match) {
+    int i = get_last_index(ser_path, '/');
+    char *path_t = malloc(i + 15);
+    memcpy(path_t, ser_path, i + 2);
+    strcat(path_t, "auth_token.js");
+    int found = strcmp(path_to_match, path_t);
+    free(path_t);
+
+    return found;
+}
+
+void
+get_ws_relative_path(const char *from, char *buf) {
+    int i = get_last_index(from, '/');
+    if (i <= 0) {
+        if (WS_PATH[0] == '/')
+            memcpy(buf, (WS_PATH + 1), strlen(WS_PATH));
+        else
+            memcpy(buf, WS_PATH, strlen(WS_PATH) + 1);
+        return;
+    }
+    buf[0] = '\0';
+    while (i > 0) {
+        if (from[i] == '/')
+            strcat(buf, "../");
+        i--;
+    }
+    if (WS_PATH[0] == '/')
+        buf[strlen(buf) - 1] = '\0';
+    strcat(buf, WS_PATH);
+}
+
+int
 callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     struct pss_http *pss = (struct pss_http *) user;
     unsigned char buffer[4096 + LWS_PRE], *p, *end;
@@ -81,8 +128,16 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, voi
             p = buffer + LWS_PRE;
             end = p + sizeof(buffer) - LWS_PRE;
 
-            if (strncmp(pss->path, "/auth_token.js", 14) == 0) {
-                size_t n = server->credential != NULL ? sprintf(buf, "var tty_auth_token = '%s';", server->credential) : 0;
+            struct service_t *service;
+            int found = 1;
+            LIST_FOREACH(service, &server->services, list) {
+                found = auth_token_url_match(service->path, pss->path);
+                if (found == 0)
+                    break;
+            }
+            size_t n;
+            if (found == 0) {
+                n = server->credential != NULL ? sprintf(buf, "var tty_auth_token = '%s';", server->credential) : 0;
 
                 if (lws_add_http_header_status(wsi, HTTP_STATUS_OK, &p, end))
                     return 1;
@@ -102,23 +157,65 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, voi
                     return 1;
                 goto try_to_reuse;
 #else
-                if (n > 0) {
-                    pss->buffer = pss->ptr = strdup(buf);
-                    pss->len = n;
-                    lws_callback_on_writable(wsi);
-                }
+                pss->buffer = pss->ptr = strdup(buf);
+                pss->len = n;
+                lws_callback_on_writable(wsi);
                 return 0;
 #endif
             }
 
-            if (strcmp(pss->path, "/") != 0) {
+            found = 1;
+            LIST_FOREACH(service, &server->services, list) {
+                found = strcmp(service->path, pss->path);
+                if (found == 0)
+                    break;
+            }
+            if (found != 0) {
                 lws_return_http_status(wsi, HTTP_STATUS_NOT_FOUND, NULL);
                 goto try_to_reuse;
             }
 
+            n = 0;
+            while (lws_hdr_copy_fragment(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_URI_ARGS, (int) n) > 0) {
+                n++;
+                /* get this config with XMLHttpRequest */
+                if (strcmp(buf, "q=config") == 0) {
+                    struct json_object *jobj = json_object_new_object();
+                    get_ws_relative_path(pss->path, buf);
+                    json_object_object_add(jobj, "socketPath", json_object_new_string(buf));
+                    json_object_object_add(jobj, "service", json_object_new_string(pss->path));
+                    strcpy(buf, json_object_to_json_string(jobj));
+                    n = strlen(buf);
+                    json_object_put(jobj);
+                    if (lws_add_http_header_status(wsi, HTTP_STATUS_OK, &p, end))
+                        return 1;
+                    if (lws_add_http_header_by_token(wsi,
+                                                     WSI_TOKEN_HTTP_CONTENT_TYPE,
+                                                     (const unsigned char *) "application/json",
+                                                     16, &p, end))
+                        return 1;
+                    if (lws_add_http_header_content_length(wsi, (unsigned long) n, &p, end))
+                        return 1;
+                    if (lws_finalize_http_header(wsi, &p, end))
+                        return 1;
+                    if (lws_write(wsi, buffer + LWS_PRE, p - (buffer + LWS_PRE), LWS_WRITE_HTTP_HEADERS) < 0)
+                        return 1;
+#if LWS_LIBRARY_VERSION_MAJOR < 3
+                    if (n > 0 && lws_write_http(wsi, buf, n) < 0)
+                        return 1;
+                    goto try_to_reuse;
+#else
+                    pss->buffer = pss->ptr = strdup(buf);
+                    pss->len = n;
+                    lws_callback_on_writable(wsi);
+                    return 0;
+#endif
+                }
+            }
+
             const char* content_type = "text/html";
             if (server->index != NULL) {
-                int n = lws_serve_http_file(wsi, server->index, content_type, NULL, 0);
+                n = lws_serve_http_file(wsi, server->index, content_type, NULL, 0);
                 if (n < 0 || (n > 0 && lws_http_transaction_completed(wsi)))
                     return 1;
             } else {
@@ -154,7 +251,7 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, voi
                 goto try_to_reuse;
             }
 
-            int n = sizeof(buffer) - LWS_PRE;
+            n = sizeof(buffer) - LWS_PRE;
             if (pss->ptr - pss->buffer + n > pss->len)
                 n = (int) (pss->len - (pss->ptr - pss->buffer));
             memcpy(buffer + LWS_PRE, pss->ptr, n);

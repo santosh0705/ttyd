@@ -1,0 +1,54 @@
+FROM alpine:3.8 as builder
+
+COPY . /ttyd-express/
+
+RUN set -exo pipefail; \
+  \
+  apk add --update --no-cache \
+    autoconf automake bash bsd-compat-headers linux-headers \
+    build-base ca-certificates cmake curl file g++ libtool vim; \
+  \
+  curl -sLo- https://github.com/json-c/json-c/archive/json-c-0.13.1-20180305.tar.gz | tar xz; \
+  cd json-c-json-c-0.13.1-20180305; \
+  env CFLAGS=-fPIC ./configure; \
+  make install; \
+  cd ..; \
+  \
+  curl -sLo- https://zlib.net/zlib-1.2.11.tar.gz | tar xz; \
+  cd zlib-1.2.11; \
+  ./configure; \
+  make install; \
+  cd ..; \
+  \
+  curl -sLo- https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-2.7.4.tar.gz | tar xz; \
+  cd libressl-2.7.4; \
+  cmake -DLIBRESSL_APPS=OFF -DLIBRESSL_TESTS=OFF; \
+  make install; \
+  cd ..; \
+  \
+  curl -sLo- https://github.com/warmcat/libwebsockets/archive/v3.0.1.tar.gz | tar xz; \
+  cd libwebsockets-3.0.1; \
+  cmake -DLWS_WITHOUT_TESTAPPS=ON -DLWS_STATIC_PIC=ON -DLWS_UNIX_SOCK=ON; \
+  make install; \
+  cd ..; \
+  sed -i 's/ websockets_shared//' /usr/local/lib/cmake/libwebsockets/LibwebsocketsConfig.cmake; \
+  \
+  cd /ttyd-express; \
+  sed -i '5s;^;\nSET(CMAKE_FIND_LIBRARY_SUFFIXES ".a")\nSET(CMAKE_EXE_LINKER_FLAGS "-static")\n;' CMakeLists.txt; \
+  cmake .; \
+  make; \
+  make install; \
+  strip -s /usr/local/bin/ttyd;
+
+FROM alpine:3.8
+
+COPY --from=builder /usr/local/bin/ttyd /usr/bin/ttyd
+
+RUN set -ex; \
+    apk add --no-cache \
+        dropbear-dbclient; \
+    chmod +x /usr/bin/ttyd
+
+CMD ["/bin/sh"]
+
+ENTRYPOINT ["/usr/bin/ttyd"]

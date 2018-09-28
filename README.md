@@ -1,15 +1,20 @@
-# ttyd - Share your terminal over the web [![Build Status](https://travis-ci.org/tsl0922/ttyd.svg?branch=master)](https://travis-ci.org/tsl0922/ttyd)
+> **NOTE:** This project is forked from https://github.com/tsl0922/ttyd [release version 1.4.2][21]. The HTML client application has been re-written, added configuration file option, added option to run a single ttyd-express instance which can serve multiple commands configured on different URL endpoints and fixed some issues & added some improvements. Each command can be configured in a JSON configuration file (sample configuration file included) and command parameters could be templated. The template variables should be passed as URL GET query values. If running ttyd-express without configuration file option than the command will be served on webroot. The original ttyd could be replaced with ttyd-express without any changes.
 
-ttyd is a simple command-line tool for sharing terminal over the web, inspired by [GoTTY][1].
 
-![screenshot](https://github.com/tsl0922/ttyd/raw/master/screenshot.gif)
+> **CREDITS:** This project is derived from open source [ttyd][20] project hosted on github and all the credits goes to the original author(s) of the project. You can find the source code of their open source projects along with license information in the project repository mentioned above. I acknowledge and are grateful to the developer(s) for their contributions to open source.
+
+# ttyd-express: Share your terminal over the web
+
+ttyd-express is a simple command-line tool for sharing terminal over the web, it has been forked from [ttyd][20]. The original ttyd project is inspired by [GoTTY][1].
+
+![screenshot](https://github.com/santosh0705/ttyd-express/raw/master/screenshot.gif)
 
 # Features
 
 - Built on top of [Libwebsockets][2] with C for speed
 - Fully-featured terminal based on [Xterm.js][3] with [CJK][18] and IME support
 - Graphical [ZMODEM][16] integration with [lrzsz][17] support
-- SSL support based on [OpenSSL][4]
+- SSL support based on [OpenSSL][4], (LibreSSL also works)
 - Run any custom command with options
 - Basic authentication support and many other custom options
 - Cross platform: macOS, Linux, FreeBSD/OpenBSD, [OpenWrt][5]/[LEDE][6], Windows
@@ -18,29 +23,16 @@ ttyd is a simple command-line tool for sharing terminal over the web, inspired b
 
 ## Install on macOS
 
-Install with [homebrew][7]:
-
-```bash
-brew install ttyd
-```
+Not yet tested. Check the original project for details on compiling it yourself.
 
 ## Install on Linux
-
-- Install from ppa (ubuntu 16.04 and later):
-
-    ```bash
-    sudo apt-get install -y software-properties-common
-    sudo add-apt-repository ppa:tsl0922/ttyd-dev
-    sudo apt-get update
-    sudo apt-get install ttyd
-    ```
 
 - Build from source (debian/ubuntu):
 
     ```bash
     sudo apt-get install cmake g++ pkg-config git vim-common libwebsockets-dev libjson-c-dev libssl-dev
-    git clone https://github.com/tsl0922/ttyd.git
-    cd ttyd && mkdir build && cd build
+    git clone https://github.com/santosh0705/ttyd-express.git
+    cd ttyd-express && mkdir build && cd build
     cmake ..
     make && make install
     ```
@@ -49,27 +41,18 @@ brew install ttyd
 
 ## Install on Windows
 
-ttyd can be built with [MSYS2][10] on windows, The build instructions is [here][13].
-
-> **NOTE:** Native windows console programs may not work correctly due to [pty incompatibility issues][11].
- As a workaround, you can use [winpty][12] as a wrapper to invoke the windows program, eg: `ttyd winpty cmd`.
+Not yet tested. Check the original project for details on compiling it yourself.
 
 ## Install on OpenWrt/LEDE
 
-[LEDE][6] `17.01.0` and later:
-
-```bash
-opkg install ttyd
-```
-
-If the install command fails, you can [compile it yourself][14].
+Not yet tested. Check the original project for details on compiling it yourself.
 
 # Usage
 
 ## Command-line Options
 
 ```
-ttyd is a tool for sharing terminal over the web
+ttyd-express is a tool for sharing terminal over the web
 
 USAGE:
     ttyd [options] <command> [<arguments...>]
@@ -78,16 +61,17 @@ VERSION:
     1.4.2
 
 OPTIONS:
+    -f, --conf-file         Configuration file path (eg: /etc/ttyd/config.json)
     -p, --port              Port to listen (default: 7681, use `0` for random port)
     -i, --interface         Network interface to bind (eg: eth0), or UNIX domain socket path (eg: /var/run/ttyd.sock)
     -c, --credential        Credential for Basic Authentication (format: username:password)
     -u, --uid               User id to run with
     -g, --gid               Group id to run with
     -s, --signal            Signal to send to the command when exit it (default: 1, SIGHUP)
-    -r, --reconnect         Time to reconnect for the client in seconds (default: 10)
+    -r, --reconnect         Time to reconnect for the client in seconds (default: 10, disable reconnect: <= 0)
     -R, --readonly          Do not allow clients to write to the TTY
     -t, --client-option     Send option to client (format: key=value), repeat to add more options
-    -T, --terminal-type     Terminal type to report, default: xterm-256color
+    -T, --terminal-type     Terminal type to report, default: xterm-color
     -O, --check-origin      Do not allow websocket connection from different origin
     -m, --max-clients       Maximum clients to support (default: 0, no limit)
     -o, --once              Accept only one client and exit on disconnection
@@ -101,12 +85,13 @@ OPTIONS:
     -v, --version           Print the version and exit
     -h, --help              Print this text and exit
 
-Visit https://github.com/tsl0922/ttyd to get more information and report bugs.
+Visit https://github.com/santosh0705/ttyd-express to get more information and report bugs.
+ttyd-express is a fork of ttyd project: https://github.com/tsl0922/ttyd
 ```
 
 ## Example Usage
 
-ttyd starts web server at port `7681` by default, you can use the `-p` option to change it, the `command` will be started with `arguments` as options. For example, run:
+ttyd-express starts web server at port `7681` by default, you can use the `-p` option to change it, the `command` will be started with `arguments` as options. For example, run:
 
 ```bash
 ttyd -p 8080 bash -x
@@ -143,7 +128,7 @@ openssl pkcs12 -export -clcerts -in client.crt -inkey client.key -out client.p12
 openssl pkcs12 -in client.p12 -out client.pem -clcerts
 ```
 
-Then start ttyd:
+Then start ttyd-express:
 
 ```bash
 ttyd --ssl --ssl-cert server.crt --ssl-key server.key --ssl-ca ca.crt bash
@@ -156,15 +141,16 @@ curl --insecure --cert client.p12[:password] -v https://localhost:7681
 
 If you don't want to enable client certificate verification, remove the `--ssl-ca` option.
 
-## Docker and ttyd
+## Docker and ttyd-express
 
-Docker containers are jailed environments which are more secure, this is useful for protecting the host system, you may use ttyd with docker like this:
+Docker containers are jailed environments which are more secure, this is useful for protecting the host system, you may use ttyd-express with docker like this:
 
-- Sharing single docker container with multiple clients: `docker run -it --rm -p 7681:7681 tsl0922/ttyd`.
+- Sharing single docker container with multiple clients: `docker run -it --rm -p 7681:7681 santosh0705/ttyd-express`.
 - Creating new docker container for each client: `ttyd docker run -it --rm ubuntu`.
 
 # Credits
 
+- [ttyd][20]: ttyd-express is a fork of ttyd with some improvements.
 - [GoTTY][1]: ttyd is a port of GoTTY to `C` language with many improvements.
 - [Libwebsockets][2]: is used to build the websocket server.
 - [Xterm.js][3]: is used to run the terminal emulator on the web, [hterm][8] is used previously.
@@ -188,3 +174,5 @@ Docker containers are jailed environments which are more secure, this is useful 
   [17]: https://ohse.de/uwe/software/lrzsz.html
   [18]: https://en.wikipedia.org/wiki/CJK_characters
   [19]: https://cmake.org/
+  [20]: https://github.com/tsl0922/ttyd
+  [21]: https://github.com/tsl0922/ttyd/tree/1.4.2

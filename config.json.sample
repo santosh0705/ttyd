@@ -1,0 +1,22 @@
+{
+  "listen": {
+    "port": 3000,
+    "ip": "127.0.0.1"
+  },
+  "terminal": {
+    "cursorBlink": true,
+    "cursorStyle": "underline",
+    "scrollback": 1000,
+    "tabStopWidth": 8,
+    "bellStyle": "sound"
+  },
+  "service": {
+    "/": {
+      "command": "/bin/login"
+    },
+    "/ssh/": {
+      "command": "/usr/bin/ssh",
+      "args": ["{user}@{host}"]
+    }
+  }
+}

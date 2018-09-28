@@ -1,0 +1,148 @@
+$black: #000;
+$translucent: rgba(0, 0, 0, 0.6);
+$white: #fff;
+$error: #D8000C;
+$borderColor: #ccc;
+$buttonColor: #2196F3;
+$buttonColorHover: #0b7dda;
+$fsMenuColor: rgba(255, 255, 255, 0.2);
+$fsMenuColorHover: #555;
+
+html {
+  background-color: $black;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-size: 16px;
+}
+
+input[type=button] {
+  color: $white;
+  font-size: 16px;
+  padding: 8px 20px;
+  border: 0;
+  border-radius: 5px;
+  background-color: $buttonColor;
+  margin: 0 6px;
+
+  &:hover {
+    background-color: $buttonColorHover;
+  }
+
+}
+
+.error {
+  color: $error;
+}
+
+.overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+
+  .flash {
+    opacity: 0.5;
+    border-radius: 8px;
+    font-size: xx-large;
+    padding: 6px 16px;
+    user-select: none;
+    transition: opacity 180ms ease-in;
+    background-color: $buttonColor;
+    color: $white;
+  }
+}
+
+.modal-overlay {
+  background-color: $translucent;
+  z-index: 502;
+  cursor: default;
+
+  .modal {
+    margin-left: 20px;
+    margin-right: 20px;
+    min-width: 300px;
+    background-color: $white;
+    border: 1px solid $borderColor;
+    border-radius: 5px;
+
+    .modal-header {
+      border-bottom: 1px solid $borderColor;
+      padding: 8px 10px 8px 52px;
+      margin: 0;
+      background-color: $buttonColor;
+      background-image: url(term-icon.png);
+      background-repeat: no-repeat;
+      background-position: 10px 6px;
+      line-height: 24px;
+      font-size: 24px;
+      border-top-left-radius: 5px;
+      border-top-right-radius: 5px;
+    }
+
+    .modal-message {
+      padding: 16px;
+    }
+
+    .progress-bar {
+      padding: 8px 16px;
+
+      progress {
+        width: 100%;
+      }
+    }
+
+    .modal-action {
+      padding: 8px 16px;
+      text-align: center;
+      border-top: 1px solid $borderColor;
+    }
+  }
+}
+
+.terminal-container {
+  height: 100%;
+  width: 100%;
+}
+
+.terminal-container .terminal {
+  padding: 5px;
+}
+
+.fs-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  z-index: 499;
+  text-decoration: none;
+  border-radius: 5px;
+  background-color: $fsMenuColor;
+  background-image: url(fs-icon.png);
+  background-repeat: no-repeat;
+  background-position: center center;
+  cursor: pointer;
+
+  &:hover {
+    background-color: $fsMenuColorHover;
+  }
+}
+
+.flip {
+  transform: scaleY(-1);
+  filter: FlipY;
+} 
+
+@import url('~xterm/lib/xterm.css');

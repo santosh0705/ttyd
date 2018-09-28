@@ -34,17 +34,31 @@ char initial_cmds[] = {
 };
 
 int
-send_initial_message(struct lws *wsi, int index) {
+send_initial_message(struct lws *wsi, struct tty_client *client) {
     unsigned char message[LWS_PRE + 1 + 4096];
     unsigned char *p = &message[LWS_PRE];
     char buffer[128];
     int n = 0;
 
-    char cmd = initial_cmds[index];
+    char cmd = initial_cmds[client->initial_cmd_index];
     switch(cmd) {
         case SET_WINDOW_TITLE:
             gethostname(buffer, sizeof(buffer) - 1);
-            n = sprintf((char *) p, "%c%s (%s)", cmd, server->command, buffer);
+            int command_len = 0;
+            for (int i = 0; client->argv[i] != NULL; i++) {
+                command_len += (strlen(client->argv[i]) + 1);
+            }
+            char *command = xmalloc(command_len);
+            command[0] = '\0';
+            char *ptr = command;
+            for (int i = 0; client->argv[i] != NULL; i++) {
+                ptr = stpcpy(ptr, client->argv[i]);
+                if (client->argv[i + 1] != NULL)
+                    ptr = stpcpy(ptr, " ");
+            }
+            lwsl_notice("start command: %s\n", command);
+            n = sprintf((char *) p, "%c%s (%s)", cmd, command, buffer);
+            free(command);
             break;
         case SET_RECONNECT:
             n = sprintf((char *) p, "%c%d", cmd, server->reconnect);
@@ -147,6 +161,15 @@ tty_client_destroy(struct tty_client *client) {
     close(client->pty);
 
 cleanup:
+    // free the command arguments
+    if (client->argv != NULL) {
+        for (int i = 0; client->argv[i] != NULL; i++) {
+            free(client->argv[i]);
+        }
+        free(client->argv);
+        client->argv = NULL;
+    }
+
     // free the buffer
     if (client->buffer != NULL)
         free(client->buffer);
@@ -175,10 +198,15 @@ thread_run_command(void *args) {
                 perror("setenv");
                 pthread_exit((void *) 1);
             }
-            if (execvp(server->argv[0], server->argv) < 0) {
+            if (execvp(client->argv[0], client->argv) < 0) {
                 perror("execvp");
                 pthread_exit((void *) 1);
             }
+            for (int i = 0; client->argv[i] != NULL; i++) {
+                free(client->argv[i]);
+            }
+            free(client->argv);
+            client->argv = NULL;
             break;
         default: /* parent */
             lwsl_notice("started process, pid: %d\n", pid);
@@ -208,6 +236,9 @@ thread_run_command(void *args) {
                         break;
                     }
                 }
+                if (client->pty_len <= 0) {
+                    break;
+                }
             }
             break;
     }
@@ -221,6 +252,7 @@ callback_tty(struct lws *wsi, enum lws_callback_reasons reason,
     struct tty_client *client = (struct tty_client *) user;
     char buf[256];
     size_t n = 0;
+    int m;
 
     switch (reason) {
         case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
@@ -241,10 +273,26 @@ callback_tty(struct lws *wsi, enum lws_callback_reasons reason,
                 lwsl_warn("refuse to serve WS client from different origin due to the --check-origin option.\n");
                 return 1;
             }
+
+            // Save GET argument fragments for reuse
+            client->fragment = NULL;
+            m = 0;
+            while (lws_hdr_copy_fragment(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_URI_ARGS, m) >= 0 ) {
+                m++;
+            }
+            char **fragment = malloc(sizeof(char *) * (1 + m));
+            m = 0;
+            while (lws_hdr_copy_fragment(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_URI_ARGS, m) >= 0 ) {
+                fragment[m] = strdup(buf);
+                m++;
+            }
+            fragment[m] = NULL;
+            client->fragment = fragment;
             break;
 
         case LWS_CALLBACK_ESTABLISHED:
             client->running = false;
+            client->argv = NULL;
             client->initialized = false;
             client->initial_cmd_index = 0;
             client->authenticated = false;
@@ -273,21 +321,23 @@ callback_tty(struct lws *wsi, enum lws_callback_reasons reason,
                     client->initialized = true;
                     break;
                 }
-                if (send_initial_message(wsi, client->initial_cmd_index) < 0) {
-                    tty_client_remove(client);
-                    lws_close_reason(wsi, LWS_CLOSE_STATUS_UNEXPECTED_CONDITION, NULL, 0);
-                    return -1;
+                if (client->argv != NULL) {
+                    if (send_initial_message(wsi, client) < 0) {
+                        tty_client_remove(client);
+                        lws_close_reason(wsi, LWS_CLOSE_STATUS_UNEXPECTED_CONDITION, NULL, 0);
+                        return -1;
+                    }
+                    client->initial_cmd_index++;
+                    lws_callback_on_writable(wsi);
+                    return 0;
                 }
-                client->initial_cmd_index++;
-                lws_callback_on_writable(wsi);
-                return 0;
+                break;
             }
             if (client->state != STATE_READY)
                 break;
 
             // read error or client exited, close connection
             if (client->pty_len <= 0) {
-                tty_client_remove(client);
                 lws_close_reason(wsi,
                                  client->pty_len == 0 ? LWS_CLOSE_STATUS_NORMAL
                                                        : LWS_CLOSE_STATUS_UNEXPECTED_CONDITION,
@@ -350,9 +400,9 @@ callback_tty(struct lws *wsi, enum lws_callback_reasons reason,
                 case JSON_DATA:
                     if (client->pid > 0)
                         break;
+                    json_object *obj = json_tokener_parse(client->buffer);
+                    struct json_object *o = NULL;
                     if (server->credential != NULL) {
-                        json_object *obj = json_tokener_parse(client->buffer);
-                        struct json_object *o = NULL;
                         if (json_object_object_get_ex(obj, "AuthToken", &o)) {
                             const char *token = json_object_get_string(o);
                             if (token != NULL && !strcmp(token, server->credential))
@@ -365,6 +415,79 @@ callback_tty(struct lws *wsi, enum lws_callback_reasons reason,
                             lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, NULL, 0);
                             return -1;
                         }
+                    }
+
+                    if (!json_object_object_get_ex(obj, "ServicePath", &o)) {
+                        lwsl_warn("Disconnecting client, missing service path.\n");
+                        tty_client_remove(client);
+                        lws_close_reason(wsi, LWS_CLOSE_STATUS_UNEXPECTED_CONDITION, NULL, 0);
+                        return -1;
+                    }
+                    const char *service_path = json_object_get_string(o);
+                    if (service_path == NULL || strlen(service_path) == 0) {
+                        lwsl_warn("Disconnecting client, service path could not be null or blank.\n");
+                        tty_client_remove(client);
+                        lws_close_reason(wsi, LWS_CLOSE_STATUS_UNEXPECTED_CONDITION, NULL, 0);
+                        return -1;
+                    }
+                    struct service_t *service;
+                    LIST_FOREACH(service, &server->services, list) {
+                        if (strcmp(service->path, service_path) == 0) {
+                            int args_len = 0;
+                            while (service->argv[args_len] != NULL) {
+                                args_len++;
+                            }
+                            char **client_cmd_argv = malloc(sizeof(char *) * (1 + args_len));
+                            client_cmd_argv[0] = strdup(service->argv[0]);
+                            for (m = 1; m < args_len; m++) {
+                                char *arg = strdup(service->argv[m]);
+                                char *arg_tmp = arg;
+                                while (arg_tmp[0] != '\0') {
+                                    if (arg_tmp[0] == '{') {
+                                        int i = 0;
+                                        while (client->fragment[i] != NULL) {
+                                            strcpy(buf, client->fragment[i]);
+                                            char *ptr = strchr(buf, '=');
+                                            ptr[0] = '\0';
+                                            char *frag_val = ptr + 1;
+                                            int frag_key_len = strlen(buf);
+                                            int frag_val_len = strlen(frag_val);
+                                            if ((strncmp((arg_tmp + 1), buf, frag_key_len) == 0) && (arg_tmp[(1 + frag_key_len)] == '}')) {
+                                                arg_tmp[0] = '\0';
+                                                int m = arg_tmp - arg;
+                                                arg_tmp = arg_tmp + frag_key_len + 2;
+                                                char *arg_new = malloc(m + frag_val_len + strlen(arg_tmp) + 1);
+                                                arg_new[0] = '\0';
+                                                ptr = arg_new;
+                                                ptr = stpcpy(ptr, arg);
+                                                ptr = stpcpy(ptr, frag_val);
+                                                ptr = stpcpy(ptr, arg_tmp);
+                                                free(arg);
+                                                arg = arg_new;
+                                                arg_tmp = arg + m + frag_val_len;
+                                            }
+                                            i++;
+                                        }
+                                    }
+                                    arg_tmp++;
+                                }
+                                client_cmd_argv[m] = arg;
+                            }
+                            client_cmd_argv[m] = NULL;
+                            client->argv = client_cmd_argv;
+                            // free the stored fragments
+                            for (m = 0; client->fragment[m] != NULL; m++) {
+                                free(client->fragment[m]);
+                            }
+                            free(client->fragment);
+                            break;
+                        }
+                    }
+                    if (client->argv == NULL) {
+                        lwsl_warn("Disconnecting client, missing service command.\n");
+                        tty_client_remove(client);
+                        lws_close_reason(wsi, LWS_CLOSE_STATUS_UNEXPECTED_CONDITION, NULL, 0);
+                        return -1;
                     }
                     int err = pthread_create(&client->thread, NULL, thread_run_command, client);
                     if (err != 0) {

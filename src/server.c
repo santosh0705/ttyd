@@ -64,25 +64,26 @@ static const struct option options[] = {
         {"help",         no_argument,       NULL, 'h'},
         {NULL,           0,                 0,     0}
 };
-static const char *opt_string = "p:i:c:u:g:s:r:I:aSC:K:A:Rt:T:Om:oBd:vh";
+static const char *opt_string = "f:p:i:c:u:g:s:r:I:aSC:K:A:Rt:T:Om:oBd:vh";
 
 void print_help() {
-    fprintf(stderr, "ttyd is a tool for sharing terminal over the web\n\n"
+    fprintf(stderr, "ttyd-express is a tool for sharing terminal over the web\n\n"
                     "USAGE:\n"
                     "    ttyd [options] <command> [<arguments...>]\n\n"
                     "VERSION:\n"
                     "    %s\n\n"
                     "OPTIONS:\n"
+                    "    -f, --conf-file         Configuration file path (eg: /etc/ttyd/config.json)\n"
                     "    -p, --port              Port to listen (default: 7681, use `0` for random port)\n"
                     "    -i, --interface         Network interface to bind (eg: eth0), or UNIX domain socket path (eg: /var/run/ttyd.sock)\n"
                     "    -c, --credential        Credential for Basic Authentication (format: username:password)\n"
                     "    -u, --uid               User id to run with\n"
                     "    -g, --gid               Group id to run with\n"
                     "    -s, --signal            Signal to send to the command when exit it (default: 1, SIGHUP)\n"
-                    "    -r, --reconnect         Time to reconnect for the client in seconds (default: 10)\n"
+                    "    -r, --reconnect         Time to reconnect for the client in seconds (default: 10, disable reconnect: <= 0)\n"
                     "    -R, --readonly          Do not allow clients to write to the TTY\n"
                     "    -t, --client-option     Send option to client (format: key=value), repeat to add more options\n"
-                    "    -T, --terminal-type     Terminal type to report, default: xterm-256color\n"
+                    "    -T, --terminal-type     Terminal type to report, default: xterm-color\n"
                     "    -O, --check-origin      Do not allow websocket connection from different origin\n"
                     "    -m, --max-clients       Maximum clients to support (default: 0, no limit)\n"
                     "    -o, --once              Accept only one client and exit on disconnection\n"
@@ -95,25 +96,27 @@ void print_help() {
                     "    -d, --debug             Set log level (default: 7)\n"
                     "    -v, --version           Print the version and exit\n"
                     "    -h, --help              Print this text and exit\n\n"
-                    "Visit https://github.com/tsl0922/ttyd to get more information and report bugs.\n",
+                    "Visit https://github.com/santosh0705/ttyd-express to get more information and report bugs.\n"
+                    "ttyd-express is a fork of ttyd project: https://github.com/tsl0922/ttyd\n",
             TTYD_VERSION
     );
 }
 
 struct tty_server *
-tty_server_new(int argc, char **argv, int start) {
+tty_server_new() {
     struct tty_server *ts;
-    size_t cmd_len = 0;
 
     ts = xmalloc(sizeof(struct tty_server));
 
     memset(ts, 0, sizeof(struct tty_server));
     LIST_INIT(&ts->clients);
     ts->client_count = 0;
+    LIST_INIT(&ts->services);
     ts->reconnect = 10;
     ts->sig_code = SIGHUP;
-    sprintf(ts->terminal_type, "%s", "xterm-256color");
+    sprintf(ts->terminal_type, "%s", "xterm-color");
     get_sig_name(ts->sig_code, ts->sig_name, sizeof(ts->sig_name));
+/* TODO: remove block
     if (start == argc)
         return ts;
 
@@ -138,6 +141,7 @@ tty_server_new(int argc, char **argv, int start) {
         }
     }
     *ptr = '\0'; // null terminator
+*/
 
     return ts;
 }
@@ -146,17 +150,25 @@ void
 tty_server_free(struct tty_server *ts) {
     if (ts == NULL)
         return;
+    if (!LIST_EMPTY(&ts->services)) {
+        struct service_t *service;
+        LIST_FOREACH(service, &ts->services, list) {
+            if (service->path != NULL)
+                free(service->path);
+            if (service->argv != NULL) {
+                for (int i = 0; service->argv[i] != NULL; i++) {
+                    free(service->argv[i]);
+                }
+                free(service->argv);
+            }
+            free(service);
+        }
+    }
     if (ts->credential != NULL)
         free(ts->credential);
     if (ts->index != NULL)
         free(ts->index);
-    free(ts->command);
     free(ts->prefs_json);
-    int i = 0;
-    do {
-        free(ts->argv[i++]);
-    } while (ts->argv[i] != NULL);
-    free(ts->argv);
     if (strlen(ts->socket_path) > 0) {
         struct stat st;
         if (!stat(ts->socket_path, &st)) {
@@ -218,6 +230,18 @@ calc_command_start(int argc, char **argv) {
     return start;
 }
 
+char **
+get_cmd(int argc, char **argv, int start) {
+    char **cmd = xmalloc(sizeof(char *) * ((argc - start) + 1));
+    int i;
+    for (i = 0; (start + i) < argc; i++) {
+        cmd[i] = strdup(argv[start + i]);
+    }
+    cmd[i] = NULL;
+
+    return cmd;
+}
+
 int
 main(int argc, char **argv) {
     if (argc == 1) {
@@ -226,12 +250,13 @@ main(int argc, char **argv) {
     }
 
     int start = calc_command_start(argc, argv);
-    server = tty_server_new(argc, argv, start);
+    char **cmd_argv = get_cmd(argc, argv, start);
+    server = tty_server_new();
     pthread_mutex_init(&server->mutex, NULL);
 
     struct lws_context_creation_info info;
     memset(&info, 0, sizeof(info));
-    info.port = 7681;
+    info.port = -1;
     info.iface = NULL;
     info.protocols = protocols;
     info.ssl_cert_filepath = NULL;
@@ -251,6 +276,8 @@ main(int argc, char **argv) {
     char ca_path[1024] = "";
 
     struct json_object *client_prefs = json_object_new_object();
+    const char *home = getenv("HOME");
+    struct stat st;
 
     // parse command line options
     int c;
@@ -260,10 +287,106 @@ main(int argc, char **argv) {
                 print_help();
                 return 0;
             case 'v':
-                printf("ttyd version %s\n", TTYD_VERSION);
+                printf("ttyd-express version %s\n", TTYD_VERSION);
                 return 0;
             case 'd':
                 debug_level = atoi(optarg);
+                break;
+            case 'f':
+                ; // empty statement
+                char *file_path;
+                if (!strncmp(optarg, "~/", 2)) {
+                    file_path = malloc(strlen(home) + strlen(optarg));
+                    sprintf(file_path, "%s%s", home, optarg + 1);
+                } else {
+                    file_path = strdup(optarg);
+                }
+                if (stat(file_path, &st) == -1) {
+                    fprintf(stderr, "Can not stat configuration file: %s, error: %s\n", file_path, strerror(errno));
+                    return -1;
+                }
+                if (S_ISDIR(st.st_mode)) {
+                    fprintf(stderr, "Invalid configuration file path: %s, is it a dir?\n", file_path);
+                    return -1;
+                }
+                FILE *fp = fopen(file_path, "r");
+                if (fp == NULL) {
+                    fprintf(stderr, "Can not open configuration file: %s\n", file_path);
+                    return -1;
+                }
+                struct json_tokener *tok;
+                tok = json_tokener_new();
+                char *buf = malloc(sizeof(char) * st.st_size);
+                if (fread(buf, 1, st.st_size, fp) != st.st_size) {
+                    fprintf(stderr, "Could not read complete file: %s\n", file_path);
+                    return -1;
+                }
+                fclose(fp);
+                struct json_object *jobj = json_tokener_parse_ex(tok, buf, st.st_size);
+                free (buf);
+                if (jobj == NULL) {
+                    fprintf(stderr, "Invalid JSON file: %s\n", file_path);
+                    return -1;
+                }
+                free (file_path);
+                struct json_object *g_jobj, *p_jobj;
+                // preference given to commandline arguments
+                if (json_object_object_get_ex(jobj, "listen", &g_jobj)) {
+                    if ((info.port == -1) && (json_object_object_get_ex(g_jobj, "port", &p_jobj)))
+                        info.port = json_object_get_int(p_jobj);
+                    if ((iface[0] == '\0') && (json_object_object_get_ex(g_jobj, "ip", &p_jobj)))
+                        strncpy(iface, json_object_get_string(p_jobj), sizeof(iface) - 1);
+                        iface[sizeof(iface) - 1] = '\0';
+                }
+                if (json_object_object_get_ex(jobj, "terminal", &g_jobj)) {
+                    json_object_object_foreach(g_jobj, key, val) {
+                        if ((json_object_object_get(client_prefs, key) == NULL) && (json_object_object_get_ex(g_jobj, key, &p_jobj))) {
+                            struct json_object *pref = NULL;
+                            if (json_object_deep_copy(p_jobj, &pref, NULL) == 0) {
+                                json_object_object_add(client_prefs, key, pref);
+                            } else {
+                                fprintf(stderr, "Failed to copy JSON configuration\n");
+                                return -1;
+                            }
+                        }
+                    }
+                }
+                if (json_object_object_get_ex(jobj, "service", &g_jobj)) {
+                    fprintf(stdout, "ttyd: service configuration found, ignoring start command if passed on commandline\n");
+                    json_object_object_foreach(g_jobj, key, val) {
+                        if (key == NULL || strlen(key) == 0 || key[0] != '/') {
+                            fprintf(stderr, "ttyd: empty or invalid service path in configuration file, it must start with a leading '/'\n");
+                            return -1;
+                        }
+                        struct service_t *service = malloc(sizeof(struct service_t));
+                        service->path = strdup(key);
+                        char *cmd = NULL;
+                        if (json_object_object_get_ex(val, "command", &p_jobj))
+                            cmd = strdup(json_object_get_string(p_jobj));
+                        if (cmd == NULL || strlen(cmd) == 0) {
+                            fprintf(stderr, "ttyd: missing start command in configuration file\n");
+                            return -1;
+                        }
+                        int args_len = 0;
+                        if (json_object_object_get_ex(val, "args", &p_jobj)) {
+                            args_len = json_object_array_length(p_jobj);
+                        }
+                        char **ser_cmd_argv = xmalloc(sizeof(char *) * (2 + args_len));
+                        int i = 0;
+                        ser_cmd_argv[i] = cmd;
+                        if (args_len > 0) {
+                            for (int j = 0; j < args_len; j++) {
+                                i++;
+                                ser_cmd_argv[i] = strdup(json_object_get_string(json_object_array_get_idx(p_jobj, j)));
+                            }
+                        }
+                        i++;
+                        ser_cmd_argv[i] = NULL;
+                        service->argv = ser_cmd_argv;
+                        LIST_INSERT_HEAD(&server->services, service, list);
+                    }
+                }
+                json_object_put(jobj);
                 break;
             case 'R':
                 server->readonly = true;
@@ -282,10 +405,6 @@ main(int argc, char **argv) {
                 break;
             case 'p':
                 info.port = atoi(optarg);
-                if (info.port < 0) {
-                    fprintf(stderr, "ttyd: invalid port: %s\n", optarg);
-                    return -1;
-                }
                 break;
             case 'i':
                 strncpy(iface, optarg, sizeof(iface) - 1);
@@ -318,19 +437,16 @@ main(int argc, char **argv) {
             case 'r':
                 server->reconnect = atoi(optarg);
                 if (server->reconnect <= 0) {
-                    fprintf(stderr, "ttyd: invalid reconnect: %s\n", optarg);
-                    return -1;
+                    fprintf(stdout, "ttyd: reconnection is disabled\n");
                 }
                 break;
             case 'I':
                 if (!strncmp(optarg, "~/", 2)) {
-                    const char* home = getenv("HOME");
-                    server->index = malloc(strlen(home) + strlen(optarg) - 1);
+                    server->index = malloc(strlen(home) + strlen(optarg));
                     sprintf(server->index, "%s%s", home, optarg + 1);
                 } else {
                     server->index = strdup(optarg);
                 }
-                struct stat st;
                 if (stat(server->index, &st) == -1) {
                     fprintf(stderr, "Can not stat index.html: %s, error: %s\n", server->index, strerror(errno));
                     return -1;
@@ -384,9 +500,26 @@ main(int argc, char **argv) {
     server->prefs_json = strdup(json_object_to_json_string(client_prefs));
     json_object_put(client_prefs);
 
-    if (server->command == NULL || strlen(server->command) == 0) {
-        fprintf(stderr, "ttyd: missing start command\n");
+    // validating parameters
+    if (info.port == -1) info.port = 7681;
+    if (info.port < 0) {
+        fprintf(stderr, "ttyd: invalid port: %d\n", info.port);
         return -1;
+    }
+    if (LIST_EMPTY(&server->services)) {
+        if (cmd_argv[0] == NULL) {
+            fprintf(stderr, "ttyd: missing service(s) or start command\n");
+            return -1;
+        }
+        struct service_t *service = malloc(sizeof(struct service_t));
+        service->path = strdup("/");
+        service->argv = cmd_argv;
+        LIST_INSERT_HEAD(&server->services, service, list);
+    } else if (cmd_argv != NULL) {
+        for (int i = 0; cmd_argv[i] != NULL; i++) {
+            free(cmd_argv[i]);
+        }
+        free(cmd_argv);
     }
 
     lws_set_log_level(debug_level, NULL);
@@ -441,10 +574,12 @@ main(int argc, char **argv) {
     lwsl_notice("tty configuration:\n");
     if (server->credential != NULL)
         lwsl_notice("  credential: %s\n", server->credential);
-    lwsl_notice("  start command: %s\n", server->command);
     lwsl_notice("  close signal: %s (%d)\n", server->sig_name, server->sig_code);
     lwsl_notice("  terminal type: %s\n", server->terminal_type);
-    lwsl_notice("  reconnect timeout: %ds\n", server->reconnect);
+    if (server->reconnect <= 0)
+        lwsl_notice("  reconnect timeout: disabled\n");
+    else
+        lwsl_notice("  reconnect timeout: %ds\n", server->reconnect);
     if (server->check_origin)
         lwsl_notice("  check origin: true\n");
     if (server->readonly)

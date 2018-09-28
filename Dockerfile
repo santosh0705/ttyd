@@ -1,5 +1,4 @@
 FROM ubuntu:16.04
-LABEL maintainer "Shuanglei Tao - tsl0922@gmail.com"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -16,7 +15,7 @@ RUN apt-get update \
       libwebsockets-dev \
       pkg-config \
       vim-common \
-    && git clone --depth=1 https://github.com/tsl0922/ttyd.git /tmp/ttyd \
+    && git clone --depth=1 https://github.com/santosh0705/ttyd-express.git /tmp/ttyd \
     && cd /tmp/ttyd && mkdir build && cd build \
     && cmake -DCMAKE_BUILD_TYPE=RELEASE .. \
     && make \

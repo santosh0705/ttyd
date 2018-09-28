@@ -1,0 +1,19 @@
+# Cmake files
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+build
+
+# Files not required for build
+.git
+.gitattributes
+.gitignore
+.travis.yml
+LICENSE
+README.md
+config.json
+html
+screenshot.gif
